@@ -1,0 +1,10 @@
+version: "3.9"
+
+services:
+  model-service:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      APP_CORS_ALLOWED_ORIGINS: http://localhost:3000

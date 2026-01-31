@@ -1,0 +1,8 @@
+spring:
+  config:
+    activate:
+      on-profile: test
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:h2:mem:testdb_test}
+    username: ${SPRING_DATASOURCE_USERNAME:sa}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
