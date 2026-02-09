@@ -754,3 +754,211 @@ Typical deployment:
 - Skipping HTTPS: tokens must be transmitted over TLS.
 - Overly broad scopes: keep least privilege.
 - Logging tokens: treat them as secrets. Borra el explanation.md y agrégalo con esta información, bien organizado. Por favor, tal cual está allí.
+
+---
+
+# Scalability:
+
+## Proposal: Microservices, PostgreSQL + Cache, Load Balancer, Messaging, and CI/CD
+
+This section proposes a practical evolution of the current application into a
+more scalable platform. It keeps the existing codebase as a starting point and
+adds infrastructure and services around it to support growth, reliability, and
+automation. Everything below explains what to implement, how to do it, and why
+it matters.
+
+### 1) Microservices split (separate responsibilities)
+
+Goal: break the monolithic “model-service” into small services with focused
+responsibilities. This reduces coupling, improves team ownership, and makes
+independent scaling possible.
+
+Suggested services:
+
+- Catalog Service: owns “models” (items), CRUD, pagination, search.
+- Inventory Service: stock levels, availability, reservations.
+- Pricing Service: pricing rules, discounts, promotions.
+- Auth Service: authentication and authorization (if not using a cloud IdP).
+- API Gateway / Edge Service: routing, rate limiting, authentication, and CORS.
+
+How to do it:
+
+1) Identify bounded contexts: keep only “model” data in Catalog Service.
+2) Split the database per service: each service gets its own schema or database.
+3) Define APIs between services: REST for synchronous calls, events for async.
+4) Implement service-to-service auth: JWT or mTLS, plus service accounts.
+5) Build a shared contract: OpenAPI and versioned endpoints.
+
+Advantages:
+
+- Independent deployments and scaling.
+- Smaller codebases and easier testing.
+- Fault isolation (a failure in one service does not crash all others).
+
+### 2) PostgreSQL with caching
+
+Goal: move from in-memory H2 to PostgreSQL for production-grade persistence,
+and add caching to reduce read latency and database load.
+
+Why PostgreSQL:
+
+- ACID compliance and strong consistency.
+- Mature indexing and query optimization.
+- Extensions and tooling (observability, backups, replication).
+
+Caching approach:
+
+Option A: Use Redis as an external cache (recommended for scale).
+Option B: Use PostgreSQL as a cache layer via materialized views or a cache
+table (simple but less flexible than Redis).
+
+How to implement:
+
+1) Replace H2 with PostgreSQL in `application-*.yml`.
+2) Add Flyway or Liquibase to manage schema migrations.
+3) Introduce a cache layer at the service level:
+   - Cache read-heavy endpoints (GET /model/{id}, list endpoints).
+   - Invalidate cache on writes (POST/DELETE/PUT).
+4) If using Redis:
+   - Add `spring-boot-starter-data-redis`.
+   - Configure TTLs (e.g., 1–5 minutes) for read caching.
+
+Advantages:
+
+- Production-ready persistence.
+- Better performance and scalability under load.
+- Reduced DB load on hot endpoints.
+
+### 3) Load balancer
+
+Goal: distribute traffic across multiple instances of each service for high
+availability and horizontal scaling.
+
+Recommended approach:
+
+- Use a managed load balancer (Azure Application Gateway or AWS ALB).
+- Terminate TLS at the load balancer.
+- Add health checks for each service instance.
+
+How to implement:
+
+1) Run multiple service instances (containers or VMs).
+2) Configure the load balancer with:
+   - Health checks for `/actuator/health`.
+   - Round-robin or least-connections routing.
+3) Add sticky sessions only if required (usually not for stateless APIs).
+
+Advantages:
+
+- Zero-downtime deployments with rolling updates.
+- Failover if one instance goes down.
+- Scale out as traffic increases.
+
+### 4) Messaging broker (RabbitMQ or cloud)
+
+Goal: decouple services using asynchronous communication. This is essential for
+event-driven architecture (EDA) and workflows that should not block a request.
+
+Example events:
+
+- “ModelCreated”
+- “ModelDeleted”
+- “InventoryUpdated”
+
+RabbitMQ vs cloud messaging:
+
+- RabbitMQ: flexible, open-source, good for on-prem or containerized setups.
+- AWS SQS/SNS: managed, no server maintenance, great for scale and reliability.
+
+How to implement (RabbitMQ):
+
+1) Add Spring AMQP starter.
+2) Define exchanges, queues, and routing keys.
+3) Publish events in service methods after DB commits.
+4) Consumers handle events and update local state.
+
+Advantages:
+
+- Loose coupling between services.
+- Better resilience under spikes.
+- Supports eventual consistency without blocking requests.
+
+### 5) CI/CD with Azure DevOps to a VM
+
+Goal: automate build, test, and deployment to a VM for continuous delivery.
+
+Recommended VM:
+
+- Azure VM (Ubuntu 22.04 LTS) is a good choice for cost, Linux compatibility,
+  and easy Docker support.
+
+Pipeline design:
+
+1) Build stage:
+   - Run Maven tests for each service.
+   - Build container images.
+2) Package stage:
+   - Push images to Azure Container Registry (ACR).
+3) Deploy stage:
+   - SSH into VM and pull images.
+   - Use Docker Compose or systemd to run services.
+   - Restart with zero downtime (blue/green or rolling).
+
+Example Azure DevOps steps:
+
+- Set service connections to ACR and the VM.
+- Use pipeline variables for secrets (DB password, API keys).
+- Publish artifacts for configuration templates.
+
+Advantages:
+
+- Automated, repeatable deployments.
+- Faster feedback loops and fewer manual errors.
+- Clear audit trail of releases.
+
+### 6) How everything fits together
+
+Proposed architecture:
+
+```
+Client
+  |
+  v
+Load Balancer
+  |
+  v
+API Gateway
+  |
+  +--> Catalog Service -> PostgreSQL
+  +--> Inventory Service -> PostgreSQL
+  +--> Pricing Service -> PostgreSQL
+  |
+  +--> Redis (cache)
+  |
+  +--> RabbitMQ (events)
+```
+
+CI/CD:
+
+```
+Developer -> Git -> Azure DevOps Pipeline -> ACR -> VM (Docker Compose)
+```
+
+### 7) Benefits summary
+
+- Scalability: services scale independently.
+- Reliability: load balancing and retryable async workflows.
+- Performance: caching + PostgreSQL improves throughput.
+- Agility: CI/CD enables rapid, safe releases.
+- Maintainability: clear service boundaries and smaller codebases.
+
+### 8) Step-by-step adoption path
+
+1) Move to PostgreSQL and add migrations.
+2) Introduce Redis caching for hot endpoints.
+3) Split the monolith into two services (Catalog + Inventory).
+4) Add RabbitMQ for event-based updates.
+5) Add a load balancer for multiple service instances.
+6) Implement Azure DevOps CI/CD with VM deployment.
+
+This phased approach reduces risk while steadily improving the architecture.
